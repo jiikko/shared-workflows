@@ -51,3 +51,43 @@ jobs:
 1. `cloc` でコード行数をカウント（コメント・空行は除外）
 2. shields.io 風の SVG バッジを生成
 3. 変更があればコミット & push
+
+---
+
+## SwiftLint
+
+SwiftLint を実行する。Linux バイナリをダウンロードして lint を走らせる。
+
+### 使い方
+
+各リポジトリに以下の yml を置く:
+
+```yaml
+# .github/workflows/swiftlint.yml
+name: SwiftLint
+
+on:
+  pull_request:
+    paths:
+      - '**/*.swift'
+      - '.swiftlint.yml'
+      - '.github/workflows/swiftlint.yml'
+
+jobs:
+  swiftlint:
+    uses: jiikko/shared-workflows/.github/workflows/swiftlint.yml@main
+```
+
+### パラメータ
+
+| 入力 | デフォルト | 説明 |
+|------|-----------|------|
+| `swiftlint_version` | `0.63.0` | 使用する SwiftLint のバージョン |
+
+```yaml
+jobs:
+  swiftlint:
+    uses: jiikko/shared-workflows/.github/workflows/swiftlint.yml@main
+    with:
+      swiftlint_version: '0.57.0'
+```
