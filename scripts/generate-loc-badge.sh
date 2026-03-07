@@ -11,8 +11,8 @@ mkdir -p "$(dirname "$OUTPUT")"
 CLOC_JSON=$(cloc "$SRC_DIR" --json --quiet 2>/dev/null)
 TOTAL=$(echo "$CLOC_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['SUM']['code'])")
 
-# Format with comma separator
-FORMATTED=$(printf "%'d" "$TOTAL")
+# Format with comma separator (locale-independent)
+FORMATTED=$(python3 -c "print(f'{$TOTAL:,}')")
 
 # Badge dimensions
 LABEL="lines of code"

@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install cloc
-        run: sudo apt-get install -y cloc
+        run: sudo apt-get update && sudo apt-get install -y cloc python3
 
       - name: Checkout shared-workflows scripts
         uses: actions/checkout@v4
