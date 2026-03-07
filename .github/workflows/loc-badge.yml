@@ -1,6 +1,18 @@
 name: Update LOC Badge
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_dir:
+        description: 'Directory to count lines in'
+        required: false
+        type: string
+        default: 'src'
+      badge_path:
+        description: 'Output path for the SVG badge'
+        required: false
+        type: string
+        default: 'docs/loc-badge.svg'
   workflow_call:
     inputs:
       source_dir:
