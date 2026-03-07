@@ -1,0 +1,25 @@
+name: SwiftLint
+
+on:
+  workflow_call:
+    inputs:
+      swiftlint_version:
+        description: 'SwiftLint version to use'
+        required: false
+        type: string
+        default: '0.63.0'
+
+jobs:
+  swiftlint:
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download SwiftLint
+        run: |
+          curl -sL "https://github.com/realm/SwiftLint/releases/download/${{ inputs.swiftlint_version }}/swiftlint_linux_amd64.zip" -o swiftlint.zip
+          unzip -q swiftlint.zip
+          chmod +x swiftlint
+
+      - name: Run SwiftLint
+        run: ./swiftlint --config .swiftlint.yml
