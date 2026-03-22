@@ -19,10 +19,15 @@ on:
     - cron: '0 0 * * 1'  # 毎週月曜
   workflow_dispatch:       # 手動実行
 
+permissions:
+  contents: write  # バッジをコミット & push するために必要
+
 jobs:
   loc:
     uses: jiikko/shared-workflows/.github/workflows/loc-badge.yml@main
 ```
+
+> **注意:** `permissions: contents: write` は呼び出し側で宣言する必要がある。reusable workflow 内の `permissions` は呼び出し側の権限を超えられない GitHub の仕様。
 
 README にバッジを追加:
 
