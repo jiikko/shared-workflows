@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: 'docs/loc-badge.svg'
+      exclude_dirs:
+        description: 'Comma-separated list of directory names to exclude from cloc (e.g. "docs,issues,vendor"). Empty = no exclusion.'
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       source_dir:
@@ -25,6 +30,11 @@ on:
         required: false
         type: string
         default: 'docs/loc-badge.svg'
+      exclude_dirs:
+        description: 'Comma-separated list of directory names to exclude from cloc (e.g. "docs,issues,vendor"). Empty = no exclusion.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -46,7 +56,7 @@ jobs:
           sparse-checkout: scripts
 
       - name: Generate LOC badge
-        run: bash .shared-workflows/scripts/generate-loc-badge.sh "${{ inputs.source_dir }}" "${{ inputs.badge_path }}"
+        run: bash .shared-workflows/scripts/generate-loc-badge.sh "${{ inputs.source_dir }}" "${{ inputs.badge_path }}" "${{ inputs.exclude_dirs }}"
 
       - name: Clean up
         run: rm -rf .shared-workflows

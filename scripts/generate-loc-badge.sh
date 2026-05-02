@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 # Generate Lines-of-Code SVG badge using cloc
-# Usage: ./scripts/generate-loc-badge.sh [source_dir] [output_path]
+# Usage: ./scripts/generate-loc-badge.sh [source_dir] [output_path] [exclude_dirs]
+#   exclude_dirs: comma-separated list of directory names to exclude from cloc.
+#                 Empty string = no exclusion (default cloc behavior).
 set -euo pipefail
 
 SRC_DIR="${1:-src}"
 OUTPUT="${2:-docs/loc-badge.svg}"
+EXCLUDE_DIRS="${3:-}"
 mkdir -p "$(dirname "$OUTPUT")"
 
+# Build cloc args. --exclude-dir is appended only when EXCLUDE_DIRS is non-empty
+# so that callers passing "" (the default) get the original cloc behavior unchanged.
+CLOC_ARGS=("$SRC_DIR" --json --quiet)
+if [ -n "$EXCLUDE_DIRS" ]; then
+    CLOC_ARGS+=(--exclude-dir="$EXCLUDE_DIRS")
+fi
+
 # Count lines with cloc (code only, excludes comments and blanks)
-CLOC_JSON=$(cloc "$SRC_DIR" --json --quiet 2>/dev/null)
+CLOC_JSON=$(cloc "${CLOC_ARGS[@]}" 2>/dev/null)
 TOTAL=$(echo "$CLOC_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['SUM']['code'])")
 
 # Format with comma separator (locale-independent)
