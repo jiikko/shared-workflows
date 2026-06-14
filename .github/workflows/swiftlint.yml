@@ -7,7 +7,10 @@ on:
         description: 'SwiftLint version to use'
         required: false
         type: string
-        default: '0.63.0'
+        # 各 app の SwiftLintPlugins (SPM) は 0.63.x を resolve しており、0.63.0 には
+        # unneeded_escaping (Task escape) / async_without_await (override) の誤検知が残る。
+        # 0.63.2 で修正済みのため default を揃える (各 app の per-app pin を不要にする)。
+        default: '0.63.2'
 
 jobs:
   swiftlint:
