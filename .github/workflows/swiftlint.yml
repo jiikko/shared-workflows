@@ -11,15 +11,26 @@ on:
 
 jobs:
   swiftlint:
-    runs-on: ubuntu-slim
+    # ubuntu-latest は Docker デーモンが使える GitHub ホスト VM。
+    # ⚠️ ubuntu-slim に戻さないこと: ubuntu-slim 自体が ubuntu:24.04 コンテナ内で
+    # 動く runner のため docker-in-docker が使えず、かつ SwiftLint の素の Linux
+    # バイナリは Swift toolchain 不在の環境では起動時に libsourcekitdInProc.so の
+    # dlopen に失敗して即クラッシュする (Illegal instruction / exit 132)。
+    # 公式 image ghcr.io/realm/swiftlint は Swift ランタイム (.so 群) を同梱して
+    # いるため swiftlint が確実に起動・実行できる。詳細: umbrella issues/026。
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download SwiftLint
-        run: |
-          curl -sL "https://github.com/realm/SwiftLint/releases/download/${{ inputs.swiftlint_version }}/swiftlint_linux_amd64.zip" -o swiftlint.zip
-          unzip -q swiftlint.zip
-          chmod +x swiftlint
-
+      # 公式 SwiftLint Docker image を使う。素の swiftlint_linux_amd64.zip を bare
+      # ubuntu で直接実行する旧方式は libsourcekitdInProc.so 不在でクラッシュする。
+      # image の ENTRYPOINT が /usr/bin/swiftlint なので、続く引数がそのまま
+      # `swiftlint --config .swiftlint.yml` として渡る。checkout は host 側で実行し
+      # (image に git が無いため)、workspace を mount して lint だけ image 内で行う。
       - name: Run SwiftLint
-        run: ./swiftlint --config .swiftlint.yml
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ghcr.io/realm/swiftlint:${{ inputs.swiftlint_version }} \
+            --config .swiftlint.yml
