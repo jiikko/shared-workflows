@@ -23,7 +23,7 @@ jobs:
     # いるため swiftlint が確実に起動・実行できる。詳細: umbrella issues/026。
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 公式 SwiftLint Docker image を使う。素の swiftlint_linux_amd64.zip を bare
       # ubuntu で直接実行する旧方式は libsourcekitdInProc.so 不在でクラッシュする。

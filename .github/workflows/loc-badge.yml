@@ -43,13 +43,13 @@ jobs:
   update-badge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install cloc
         run: sudo apt-get update && sudo apt-get install -y cloc python3
 
       - name: Checkout shared-workflows scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: jiikko/shared-workflows
           path: .shared-workflows
