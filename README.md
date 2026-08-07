@@ -40,7 +40,8 @@ README にバッジを追加:
 | 入力 | デフォルト | 説明 |
 |------|-----------|------|
 | `source_dir` | `src` | カウント対象ディレクトリ |
-| `badge_path` | `docs/loc-badge.svg` | SVG の出力先 |
+| `badge_path` | `docs/loc-badge.svg` | SVG の出力先（親ディレクトリは自動生成される） |
+| `exclude_dirs` | `''`（除外なし） | cloc から除外するディレクトリ名のカンマ区切りリスト（例: `docs,issues,vendor`） |
 
 ```yaml
 jobs:
@@ -49,7 +50,10 @@ jobs:
     with:
       source_dir: lib
       badge_path: docs/loc-badge.svg
+      exclude_dirs: 'docs,vendor'
 ```
+
+このワークフローは `workflow_dispatch` でも同じ入力を受け取るので、この repo 上から直接手動実行することもできる。
 
 ### 仕組み
 
@@ -61,7 +65,9 @@ jobs:
 
 ## SwiftLint
 
-SwiftLint を実行する。Linux バイナリをダウンロードして lint を走らせる。
+SwiftLint を実行する。公式 Docker image `ghcr.io/realm/swiftlint` を使って lint を走らせる。
+
+> **前提:** 呼び出し側リポジトリのルートに `.swiftlint.yml` が必要（`--config .swiftlint.yml` 固定で渡している）。
 
 ### 使い方
 
@@ -87,15 +93,17 @@ jobs:
 
 | 入力 | デフォルト | 説明 |
 |------|-----------|------|
-| `swiftlint_version` | `0.63.0` | 使用する SwiftLint のバージョン |
+| `swiftlint_version` | `0.63.2` | 使用する SwiftLint のバージョン（`ghcr.io/realm/swiftlint` のタグ） |
 
 ```yaml
 jobs:
   swiftlint:
     uses: jiikko/shared-workflows/.github/workflows/swiftlint.yml@main
     with:
-      swiftlint_version: '0.57.0'
+      swiftlint_version: '0.63.2'
 ```
+
+> **補足:** default が `0.63.2` なのは、各 app の SwiftLintPlugins (SPM) が resolve する 0.63.x に合わせつつ、0.63.0 に残る誤検知（`unneeded_escaping` / `async_without_await`）を避けるため。詳しい経緯は `swiftlint.yml` 内のコメントを参照。
 
 ---
 
