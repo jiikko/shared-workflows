@@ -1,0 +1,58 @@
+name: Auto-merge dependabot PR
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+  actions: read
+
+jobs:
+  automerge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Wait for CI, then squash merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SELF: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          sleep 60
+          for i in $(seq 1 80); do
+            state=$(gh pr view "$PR" --json state --jq .state)
+            if [ "$state" != "OPEN" ]; then
+              echo "PR #$PR is $state. Skipping."
+              exit 0
+            fi
+            checks=$(gh pr view "$PR" --json statusCheckRollup \
+              --jq "[.statusCheckRollup[] | select(.workflowName != \"$SELF\")]")
+            bad=$(printf '%s' "$checks" | jq '[.[]
+              | (.conclusion // .state)
+              | select(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT"
+                       or . == "CANCELLED" or . == "ACTION_REQUIRED"
+                       or . == "STARTUP_FAILURE")] | length')
+            if [ "$bad" -gt 0 ]; then
+              echo "CI is not green. Leaving PR #$PR open for manual review."
+              exit 1
+            fi
+            pending=$(printf '%s' "$checks" | jq '[.[]
+              | select((.__typename == "CheckRun" and .status != "COMPLETED")
+                       or (.__typename == "StatusContext" and .state == "PENDING"))]
+              | length')
+            if [ "$pending" -eq 0 ]; then
+              gh pr merge "$PR" --squash --delete-branch
+              echo "Merged PR #$PR."
+              exit 0
+            fi
+            echo "waiting for $pending check(s)... ($i)"
+            sleep 30
+          done
+          echo "Timed out waiting for checks."
+          exit 1
