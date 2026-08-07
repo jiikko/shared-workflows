@@ -13,7 +13,7 @@ permissions:
 jobs:
   automerge:
     runs-on: ubuntu-slim
-    timeout-minutes: 10
+    timeout-minutes: 1
     steps:
       - name: Merge green dependabot PRs
         env:
