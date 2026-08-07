@@ -12,8 +12,10 @@ permissions:
 
 jobs:
   automerge:
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-slim
     timeout-minutes: 45
     steps:
       - name: Wait for CI, then squash merge
@@ -22,6 +24,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           SELF: ${{ github.workflow }}
+          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           sleep 60
@@ -47,7 +50,7 @@ jobs:
                        or (.__typename == "StatusContext" and .state == "PENDING"))]
               | length')
             if [ "$pending" -eq 0 ]; then
-              gh pr merge "$PR" --squash --delete-branch
+              gh pr merge "$PR" --squash --delete-branch --match-head-commit "$SHA"
               echo "Merged PR #$PR."
               exit 0
             fi
