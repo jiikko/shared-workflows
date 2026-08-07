@@ -12,50 +12,61 @@ permissions:
 
 jobs:
   automerge:
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]'
-      && github.actor == 'dependabot[bot]'
     runs-on: ubuntu-slim
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
-      - name: Wait for CI, then squash merge
+      - name: Merge green dependabot PRs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
           SELF: ${{ github.workflow }}
-          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          sleep 60
-          for i in $(seq 1 80); do
-            state=$(gh pr view "$PR" --json state --jq .state)
-            if [ "$state" != "OPEN" ]; then
-              echo "PR #$PR is $state. Skipping."
-              exit 0
-            fi
-            checks=$(gh pr view "$PR" --json statusCheckRollup \
-              --jq "[.statusCheckRollup[] | select(.workflowName != \"$SELF\")]")
+
+          nums=$(gh pr list --state open --limit 50 --json number,author \
+            --jq '.[] | select(.author.is_bot == true
+                  and (.author.login | test("^(app/)?dependabot(\\[bot\\])?$")))
+                  | .number')
+
+          if [ -z "$nums" ]; then
+            echo "No open dependabot PR."
+            exit 0
+          fi
+
+          failed=0
+          for num in $nums; do
+            pr=$(gh pr view "$num" --json headRefOid,statusCheckRollup)
+            sha=$(printf '%s' "$pr" | jq -r '.headRefOid')
+            checks=$(printf '%s' "$pr" \
+              | jq "[.statusCheckRollup[] | select(.workflowName != \"$SELF\")]")
+
             bad=$(printf '%s' "$checks" | jq '[.[]
               | (.conclusion // .state)
               | select(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT"
                        or . == "CANCELLED" or . == "ACTION_REQUIRED"
                        or . == "STARTUP_FAILURE")] | length')
             if [ "$bad" -gt 0 ]; then
-              echo "CI is not green. Leaving PR #$PR open for manual review."
-              exit 1
+              echo "PR #$num: CI is not green ($bad failing). Leaving it open."
+              continue
             fi
+
             pending=$(printf '%s' "$checks" | jq '[.[]
               | select((.__typename == "CheckRun" and .status != "COMPLETED")
-                       or (.__typename == "StatusContext" and .state == "PENDING"))]
+                    or (.__typename == "StatusContext" and .state == "PENDING"))]
               | length')
-            if [ "$pending" -eq 0 ]; then
-              gh pr merge "$PR" --squash --delete-branch --match-head-commit "$SHA"
-              echo "Merged PR #$PR."
-              exit 0
+            if [ "$pending" -gt 0 ]; then
+              echo "PR #$num: $pending check(s) still running. Retry next week."
+              continue
             fi
-            echo "waiting for $pending check(s)... ($i)"
-            sleep 30
+
+            total=$(printf '%s' "$checks" | jq 'length')
+            echo "PR #$num: all green ($total check(s)). Merging $sha."
+            if gh pr merge "$num" --squash --delete-branch --match-head-commit "$sha"; then
+              echo "PR #$num: merged."
+            else
+              echo "PR #$num: merge failed."
+              failed=1
+            fi
           done
-          echo "Timed out waiting for checks."
-          exit 1
+
+          exit "$failed"
