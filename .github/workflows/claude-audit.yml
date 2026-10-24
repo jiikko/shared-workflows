@@ -177,6 +177,15 @@ jobs:
               && mv "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
           }
           fetch || { echo "OIDC token を取得できない (呼び出し側の permissions に id-token: write が要る)" >&2; exit 1; }
+          # federation rule の CEL と突き合わせるための claim をログに出す (401 の理由は Console の認証イベントにしか出ないため)。
+          # 出すのは署名を除いた payload の一部だけで、トークンとしては使えない
+          payload=$(cut -d. -f2 "$ANTHROPIC_IDENTITY_TOKEN_FILE" | tr '_-' '/+')
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
+          echo "::group::OIDC token の claim (federation rule の CEL と照合する)"
+          printf '%s' "$payload" | base64 -d | tr ',' '\n' \
+            | grep -E '"(sub|ref|repository|repository_owner|repository_owner_id|event_name|workflow_ref|job_workflow_ref|aud)"' \
+            || echo "claim を読めない"
+          echo "::endgroup::"
           nohup bash -c "$(declare -f fetch); while sleep 240; do fetch; done" >/dev/null 2>&1 &
 
       # audit skill の正本は skills_repo (public) にある。手元と同じ ~/.claude/skills/audit と ~/.claude/rules の位置に置く。
