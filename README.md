@@ -152,3 +152,79 @@ jobs:
 - **ポーリングしない**ので job は数十秒で終わる（`timeout-minutes: 1`）
 - `--match-head-commit` により、判定した commit と merge 対象がずれていれば merge は失敗する
 - merge に失敗した PR があれば job 全体を失敗させて気付けるようにしている
+
+---
+
+## Claude audit
+
+Claude Code に audit skill（[jiikko/dotfiles](https://github.com/jiikko/dotfiles) の `_claude/skills/audit`）の監査タイプを回させ、変更を PR で出す。merge は人がレビューしてから行う。Claude はファイルを読んで書くだけで、テストもビルドも実行しない。
+
+### 使い方
+
+```yaml
+# .github/workflows/claude-audit.yml
+name: Claude audit
+
+on:
+  schedule:
+    - cron: '17 18 * * 0'  # 毎週月曜 03:17 JST
+  workflow_dispatch:
+    inputs:
+      cost:
+        type: choice
+        default: standard-10usd
+        options: [light-3usd, standard-10usd, heavy-25usd]
+
+jobs:
+  audit:
+    permissions:
+      contents: write        # PR のブランチを push
+      pull-requests: write   # PR を作る
+      id-token: write        # Claude の Workload Identity Federation
+    uses: jiikko/shared-workflows/.github/workflows/claude-audit.yml@main
+    with:
+      anthropic_organization_id: <組織 ID>
+      anthropic_federation_rule_id: fdrl_...
+      anthropic_service_account_id: svac_...
+      audits: test-cleanup test-helpers
+      cost: ${{ inputs.cost || 'standard-10usd' }}
+      targets: |
+        Tests
+```
+
+> **前提:**
+> - 呼び出し側の repo の Settings > Actions > General で「Allow GitHub Actions to create and approve pull requests」を有効にする（無効だと PR の作成が 403）
+> - Claude Console に federation rule を作る。rule は呼び出し側の workflow と、この reusable workflow の両方で絞る（`claims.workflow_ref` は呼び出し側のファイル、`claims.job_workflow_ref` はこのファイルを指す）:
+>   ```
+>   claims.repository == "<owner>/<repo>" && claims.ref == "refs/heads/<branch>"
+>   && claims.event_name in ["schedule", "workflow_dispatch"]
+>   && claims.workflow_ref == "<owner>/<repo>/.github/workflows/claude-audit.yml@refs/heads/<branch>"
+>   && claims.job_workflow_ref == "jiikko/shared-workflows/.github/workflows/claude-audit.yml@refs/heads/main"
+>   ```
+>   呼び出し側のファイル名・`on:` のイベント・`uses:` の `@main` を変えたら rule も合わせる（合わないと 401。理由は Console の認証イベントに出る）
+
+### パラメータ
+
+| 入力 | デフォルト | 説明 |
+|------|-----------|------|
+| `anthropic_organization_id` | （必須） | Claude Console の組織 ID |
+| `anthropic_federation_rule_id` | （必須） | federation rule の ID |
+| `anthropic_service_account_id` | （必須） | service account の ID |
+| `anthropic_workspace_id` | `''` | workspace の ID。rule が 1 つの workspace だけを対象にするなら省略できる |
+| `audits` | （必須） | 監査タイプ ID の空白区切り（`test-cleanup test-helpers` / `dead-code` など。一覧は audit skill の SKILL.md） |
+| `cost` | `standard-10usd` | 下表 |
+| `targets` | `''`（repo 全体） | 監査の対象パス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
+| `exclude` | `''` | 対象から外すパス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
+| `instructions` | `''` | repo 固有の追加の指示（生成物の制約・issue の起こし方など） |
+| `allowed_tools` | `''` | Read / Glob / Grep / Edit / Write に加えて許すツール（カンマ区切り。例: `Bash(bin/next-issue-number)`） |
+| `pr_paths` | `''`（= `targets`） | PR に含めるパス（空白・カンマ・改行区切り。空白を含むパスは渡せない）。`targets` が空なら必須（空だと作業ツリーの変更が全部 commit されるため、plan job で止める） |
+| `skills_repo` | `jiikko/dotfiles` | audit skill と rules を取る public repo |
+| `claude_code_version` | `2.1.309` | Claude Code CLI の版（WIF の環境変数を読むことを確かめた版） |
+
+| cost | 用途 | モデル / effort | 予算の上限 | runner（job の打ち切り） |
+|------|------|----------------|-----------|------------------------|
+| `light-3usd` | workflow を変えたときの動作確認 | Sonnet 5.5 / medium | 3 USD | ubuntu-slim（15 分） |
+| `standard-10usd` | 定期実行 | Fable 5.1 / high | 10 USD | ubuntu-slim（15 分） |
+| `heavy-25usd` | 多めに回すとき | Fable 5.1 / xhigh | 25 USD | ubuntu-latest（30 分） |
+
+予算は CLI の `--max-budget-usd` で、ターンを終えてから判定するので最後のターンの分だけ超えうる。上限・ターン数・時間で打ち切られても、それまでの変更で PR を作り、本文に「途中までの可能性がある」と書き足す。run の消費額・ターン数・所要時間・使ったモデルは Step Summary に出る。

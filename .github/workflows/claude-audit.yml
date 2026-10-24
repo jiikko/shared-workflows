@@ -1,0 +1,286 @@
+name: Claude audit
+
+# Claude Code に audit skill (jiikko/dotfiles の _claude/skills/audit) の監査タイプを「直接実行」で回させ、変更を PR で出す。
+# merge は人がレビューしてから行う。実行頻度・対象・repo 固有の指示は呼び出し側が決める。使い方は README の「Claude audit」。
+#
+# Claude に Bash を渡さない (呼び出し側が allowed_tools で許したコマンドだけ): ファイルを読んで書くだけにして、job を短く保ち、
+# git の操作は後段の action に寄せる。そのため Claude はテストもビルドも実行できず、検証は PR を確かめる人が担う。
+#
+# 認証は API キーではなく Claude Console の Workload Identity Federation。ID は秘密ではないので inputs で受け取る。
+# federation rule は呼び出し側の workflow (claims.workflow_ref) と、この reusable workflow (claims.job_workflow_ref) の両方で絞る。
+# claude-code-action を使わない: API キー / OAuth トークン前提の入力で、WIF の環境変数をそのまま使えるかが確かめられていない。
+# CLI は 2.1.309 で ANTHROPIC_IDENTITY_TOKEN_FILE ほかを読むことを本体の文字列で確認した。版を上げるときは WIF の対応を確かめ直す。
+#
+# どの cost でも job は 30 分以内に収める (GHA の実行時間も private repo では課金される)。ubuntu-slim は job が 15 分で打ち切られる
+# (timeout-minutes では延ばせない) ので、30 分使う heavy-25usd は ubuntu-latest で回す。opus 1 本は 1 回 9 分ほど・約 8 ドル
+# (obaket の 2026-10-23 の run) で、standard 以上は単価が opus の 2.5 倍の Fable にして、同じ予算を短い時間で使う。
+# fast モードを使わない: Fable は対応していない (Opus 系だけ)。Opus の fast モードにする版は WIF の組織で通るかを確かめていない。
+
+on:
+  workflow_call:
+    inputs:
+      anthropic_organization_id:
+        description: 'Claude Console の組織 ID'
+        type: string
+        required: true
+      anthropic_federation_rule_id:
+        description: 'federation rule の ID (fdrl_...)'
+        type: string
+        required: true
+      anthropic_service_account_id:
+        description: 'service account の ID (svac_...)'
+        type: string
+        required: true
+      anthropic_workspace_id:
+        description: 'workspace の ID (wrkspc_...)。rule が 1 つの workspace だけを対象にするなら省略できる'
+        type: string
+        default: ''
+      audits:
+        description: 'audit skill の監査タイプ ID を空白区切りで (例: test-cleanup test-helpers)'
+        type: string
+        required: true
+      cost:
+        description: 'light-3usd (動作確認用) / standard-10usd / heavy-25usd'
+        type: string
+        default: standard-10usd
+      targets:
+        description: '監査の対象パス (空白・カンマ・改行区切り)。空なら repo 全体'
+        type: string
+        default: ''
+      exclude:
+        description: '対象から外すパス (空白・カンマ・改行区切り)'
+        type: string
+        default: ''
+      instructions:
+        description: 'repo 固有の追加の指示 (生成物の制約・issue の起こし方など)'
+        type: string
+        default: ''
+      allowed_tools:
+        description: 'Read / Glob / Grep / Edit / Write に加えて許すツール (カンマ区切り。例: Bash(bin/next-issue-number))'
+        type: string
+        default: ''
+      pr_paths:
+        description: 'PR に含めるパス (空白・カンマ・改行区切り。create-pull-request の add-paths)。空なら targets'
+        type: string
+        default: ''
+      skills_repo:
+        description: 'audit skill と rules を取る repo'
+        type: string
+        default: jiikko/dotfiles
+      claude_code_version:
+        description: 'Claude Code CLI の版'
+        type: string
+        default: '2.1.309'
+
+jobs:
+  # cost ごとの設定の正本。予算 (--max-budget-usd) は CLI がターンを終えてから見る上限で、最後のターンの分だけ超えうる (超えたら rc=1)。
+  # 上限まで使い切る保証ではなく、実際の消費は見つかった候補の量で決まる。scope は heavy に網羅を求めて、予算を使う仕事を与える。
+  # step_timeout は job の timeout より短くして、打ち切られても後段の PR の step が走る余地を残す。
+  plan:
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      runner: ${{ steps.plan.outputs.runner }}
+      job_timeout: ${{ steps.plan.outputs.job_timeout }}
+      step_timeout: ${{ steps.plan.outputs.step_timeout }}
+      model: ${{ steps.plan.outputs.model }}
+      effort: ${{ steps.plan.outputs.effort }}
+      max_turns: ${{ steps.plan.outputs.max_turns }}
+      budget: ${{ steps.plan.outputs.budget }}
+      scope: ${{ steps.plan.outputs.scope }}
+      branch: ${{ steps.plan.outputs.branch }}
+      title: ${{ steps.plan.outputs.title }}
+      pr_paths: ${{ steps.plan.outputs.pr_paths }}
+    steps:
+      - id: plan
+        env:
+          COST: ${{ inputs.cost }}
+          AUDITS: ${{ inputs.audits }}
+          TARGETS: ${{ inputs.targets }}
+          PR_PATHS: ${{ inputs.pr_paths }}
+        run: |
+          # runner job_timeout step_timeout model effort max_turns budget
+          case "$COST" in
+            light-3usd)     set -- ubuntu-slim   15 12 claude-sonnet-5-5 medium 60  3
+                            scope='予算が小さい。確信の高い候補を最大 3 件まで入れて終える。' ;;
+            standard-10usd) set -- ubuntu-slim   15 13 claude-fable-5-1  high   120 10
+                            scope='' ;;
+            heavy-25usd)    set -- ubuntu-latest 30 25 claude-fable-5-1  xhigh  300 25
+                            scope='対象のファイルを全部読み、見つけた候補をすべて検討する。' ;;
+            *) echo "未知の cost: $COST" >&2; exit 1 ;;
+          esac
+          # 監査タイプは branch 名と PR の題に入るので、ID の形だけを通す
+          printf '%s\n' "$AUDITS" | grep -qxE '[a-z0-9-]+( [a-z0-9-]+)*' \
+            || { echo "audits は空白区切りの監査タイプ ID で渡す: $AUDITS" >&2; exit 1; }
+          # PR に含めるパスが空だと create-pull-request は作業ツリーの変更を全部 commit する。
+          # 空白・カンマ・改行のどれで区切っても 1 行 1 パスにそろえる (空白を含むパスは渡せない)
+          paths=$(printf '%s\n' "${PR_PATHS:-$TARGETS}" | tr ', \t' '\n' | sed '/^$/d')
+          [ -n "$paths" ] || { echo "targets か pr_paths のどちらかで PR に含めるパスを渡す" >&2; exit 1; }
+          # 入力の行が heredoc の区切りを閉じて他の出力 (budget / runner など) を書き換えないよう、区切りを run ごとに変える
+          eof="CLAUDE_AUDIT_EOF_$(cat /proc/sys/kernel/random/uuid)"
+          {
+            echo "runner=$1"; echo "job_timeout=$2"; echo "step_timeout=$3"; echo "model=$4"
+            echo "effort=$5"; echo "max_turns=$6"; echo "budget=$7"; echo "scope=$scope"
+            echo "branch=claude-audit/${AUDITS// /-}"
+            echo "title=claude-audit: $AUDITS ($COST)"
+            echo "pr_paths<<$eof"; printf '%s\n' "$paths"; echo "$eof"
+          } >> "$GITHUB_OUTPUT"
+          echo "audits=$AUDITS cost=$COST runner=$1 model=$4 effort=$5 max_turns=$6 budget=\$$7" >> "$GITHUB_STEP_SUMMARY"
+
+  audit:
+    needs: plan
+    runs-on: ${{ needs.plan.outputs.runner }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.job_timeout) }}
+    env:
+      ANTHROPIC_ORGANIZATION_ID: ${{ inputs.anthropic_organization_id }}
+      ANTHROPIC_FEDERATION_RULE_ID: ${{ inputs.anthropic_federation_rule_id }}
+      ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ inputs.anthropic_service_account_id }}
+      ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ github.workspace }}/../gha-jwt
+      PR_BODY: .claude-audit/pr-body.md
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # workspace の ID は rule が複数の workspace にまたがるときだけ要る。空の値を env に置くと「指定あり」と読まれうるので、渡されたときだけ書く。
+      - name: Set workspace ID
+        if: ${{ inputs.anthropic_workspace_id != '' }}
+        env:
+          WORKSPACE_ID: ${{ inputs.anthropic_workspace_id }}
+        run: echo "ANTHROPIC_WORKSPACE_ID=$WORKSPACE_ID" >> "$GITHUB_ENV"
+
+      # GitHub の JWT は約 5 分で切れ、Anthropic のアクセストークン (rule の token_lifetime) も job より短いことがある。
+      # CLI は更新のたびに ANTHROPIC_IDENTITY_TOKEN_FILE を読み直し、jti 付きの JWT は 1 回しか交換できないので、
+      # ファイルを 4 分ごとに新しい JWT へ書き直し続ける。背景のループは job の終わりに runner が片付ける。
+      # 呼び出し側の job に permissions: id-token: write が無いと ACTIONS_ID_TOKEN_REQUEST_URL が無く、ここで落ちる。
+      - name: Keep GitHub OIDC token fresh
+        run: |
+          fetch() {
+            curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" \
+              | sed -n 's/.*"value":"\([^"]*\)".*/\1/p' > "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" \
+              && [ -s "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" ] \
+              && mv "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
+          fetch || { echo "OIDC token を取得できない (呼び出し側の permissions に id-token: write が要る)" >&2; exit 1; }
+          nohup bash -c "$(declare -f fetch); while sleep 240; do fetch; done" >/dev/null 2>&1 &
+
+      # audit skill の正本は skills_repo (public) にある。手元と同じ ~/.claude/skills/audit と ~/.claude/rules の位置に置く。
+      # $HOME に置くのは、workspace に置くと PR に untracked として混ざりうるため。
+      - name: Install Claude Code and audit skill
+        env:
+          CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
+          SKILLS_REPO: ${{ inputs.skills_repo }}
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CODE_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          git clone --depth 1 --filter=blob:none --sparse "https://github.com/$SKILLS_REPO.git" "$HOME/skills-src"
+          git -C "$HOME/skills-src" sparse-checkout set _claude/skills/audit _claude/rules _claude/rules-checklists
+          mkdir -p "$HOME/.claude/skills"
+          ln -s "$HOME/skills-src/_claude/skills/audit" "$HOME/.claude/skills/audit"
+          ln -s "$HOME/skills-src/_claude/rules" "$HOME/.claude/rules"
+          test -f "$HOME/.claude/skills/audit/SKILL.md"
+
+      - name: Run audit
+        id: audit
+        timeout-minutes: ${{ fromJSON(needs.plan.outputs.step_timeout) }}
+        env:
+          MODEL: ${{ needs.plan.outputs.model }}
+          EFFORT: ${{ needs.plan.outputs.effort }}
+          MAX_TURNS: ${{ needs.plan.outputs.max_turns }}
+          BUDGET: ${{ needs.plan.outputs.budget }}
+          SCOPE: ${{ needs.plan.outputs.scope }}
+          AUDITS: ${{ inputs.audits }}
+          TARGETS: ${{ inputs.targets }}
+          EXCLUDE: ${{ inputs.exclude }}
+          INSTRUCTIONS: ${{ inputs.instructions }}
+          EXTRA_TOOLS: ${{ inputs.allowed_tools }}
+        run: |
+          one_line() { printf '%s\n' "$1" | tr ', \t' '\n' | sed '/^$/d' | paste -sd, - | sed 's/,/, /g'; }
+          target_list=$(one_line "$TARGETS")
+          exclude_list=$(one_line "$EXCLUDE")
+          # shellcheck disable=SC2088 # Claude に渡す文字列で、ここで ~ を展開させない
+          prompt="~/.claude/skills/audit/SKILL.md を Read し、監査タイプ $AUDITS を「直接実行」で実行してください。
+          CI の中で動いているので、ユーザーへの質問 (AskUserQuestion) はせず、skill が選択を求める箇所は次の指定で進めてください。
+
+          対象: ${target_list:-repo 全体}
+          対象から外すもの: ${exclude_list:-なし}
+
+          制約:
+          - 許可されたツール以外は使えず、テストもビルドも実行できない。正しさをコードを読んで確かめられる変更だけを入れる。
+            確信が持てない変更は入れずに、PR 本文の「見送った候補」に理由と一緒に書く
+          - skill の Step 5 の実行ログへの追記は行う。commit は後段の step が行うので、あなたは git を触らない
+          - 変更が 1 つも無いと判断したら、ファイルを書かずに終える (PR は作られない)
+          - 予算・ターン数・時間の上限で途中で打ち切られうる。変更を 1 つ入れるたびに、その時点の PR 本文を書き直しておく
+
+          $PR_BODY へ PR 本文を日本語で書く:
+          - 変更ごとに、何をどう変えたかと、その理由
+          - 見送った候補と理由
+          - 「CI ではビルド・テスト未実行。merge 前に手元で確認すること」の一文"
+          [ -z "$INSTRUCTIONS" ] || prompt="$prompt
+
+          この repo の指示:
+          $INSTRUCTIONS"
+          [ -z "$SCOPE" ] || prompt="$prompt
+
+          この run の範囲: $SCOPE"
+
+          # 消費額・ターン数・所要時間を Summary に出し、cost ごとの設定を実測で調整できるようにする
+          result="$RUNNER_TEMP/claude-result.json"
+          set +e
+          claude -p "$prompt" \
+            --model "$MODEL" \
+            ${EFFORT:+--effort "$EFFORT"} \
+            --max-turns "$MAX_TURNS" \
+            --max-budget-usd "$BUDGET" \
+            --allowedTools "Read,Glob,Grep,Edit,Write${EXTRA_TOOLS:+,$EXTRA_TOOLS}" \
+            --output-format json > "$result"
+          rc=$?
+          set -e
+          echo "claude rc=$rc" >> "$GITHUB_STEP_SUMMARY"
+          fields=$(grep -oE '"(subtype|total_cost_usd|num_turns|duration_ms)":[^,}]*|"claude-[a-z0-9-]+":\{"inputTokens"' "$result")
+          if [ -n "$fields" ]; then
+            printf '%s\n' "$fields" | sed 's/:{"inputTokens"$/ (使ったモデル)/; s/^/- /' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- 結果の JSON を読めない" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
+
+      # PR 本文は workspace の外へ移してから PR を作る (pr_paths の指定次第で本文のファイルが commit に混ざらないように)。
+      # 上限で打ち切られた run でも、それまでの変更を PR にする。途中までの変更が混ざりうることを本文に書き足す。
+      - name: Prepare PR body
+        id: body
+        if: ${{ !cancelled() }}
+        env:
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+        run: |
+          # hashFiles はドットで始まるディレクトリを拾わないことがあるので、有無はシェルで見る
+          if [ ! -s "$PR_BODY" ]; then
+            # 本文が無いのに作業ツリーが変わっているなら、変更が PR にならずに消える。黙って緑にしない
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "PR 本文が無いのに作業ツリーに変更がある (PR は作らない):" >> "$GITHUB_STEP_SUMMARY"
+              git status --porcelain | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "PR 本文が無い (変更なし)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mv "$PR_BODY" "$RUNNER_TEMP/pr-body.md"
+          rm -rf .claude-audit
+          if [ "$AUDIT_OUTCOME" = failure ]; then
+            printf '\n> 🚨 この run は Claude の step が失敗で終わった (予算・ターン数・時間の上限のどれか)。最後の変更が途中までの可能性がある。\n' \
+              >> "$RUNNER_TEMP/pr-body.md"
+          fi
+          echo "path=$RUNNER_TEMP/pr-body.md" >> "$GITHUB_OUTPUT"
+
+      # 前提: 呼び出し側の repo の Settings > Actions > General の「Allow GitHub Actions to create and approve pull requests」が有効
+      - name: Create pull request
+        if: ${{ !cancelled() && steps.body.outputs.path != '' }}
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: ${{ needs.plan.outputs.branch }}
+          delete-branch: true
+          title: ${{ needs.plan.outputs.title }}
+          body-path: ${{ steps.body.outputs.path }}
+          commit-message: ${{ needs.plan.outputs.title }}
+          add-paths: ${{ needs.plan.outputs.pr_paths }}
