@@ -244,6 +244,12 @@ jobs:
           else
             echo "- 結果の JSON を読めない" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # 失敗の理由 (認証の 401・予算切れなど) は結果の JSON にしか出ない。Summary は API から読めないので、ログにも残す
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::claude の結果 (rc=$rc)"
+            head -c 4000 "$result"; echo
+            echo "::endgroup::"
+          fi
           exit "$rc"
 
       # PR 本文は workspace の外へ移してから PR を作る (pr_paths の指定次第で本文のファイルが commit に混ざらないように)。
