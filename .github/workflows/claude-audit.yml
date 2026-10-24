@@ -1,7 +1,7 @@
 name: Claude audit
 
 # Claude Code に audit skill (jiikko/dotfiles の _claude/skills/audit) の監査タイプを「直接実行」で回させ、変更を PR で出す。
-# merge は人がレビューしてから行う。実行頻度・対象・repo 固有の指示は呼び出し側が決める。使い方は README の「Claude audit」。
+# merge は人がレビューしてから行う。実行頻度・対象・repo 固有の指示は呼び出し側が決める。使い方は docs/claude-audit/ (README.md と呼び出し側の例の sample.md)。
 #
 # Claude に Bash を渡さない (呼び出し側が allowed_tools で許したコマンドだけ): ファイルを読んで書くだけにして、job を短く保ち、
 # git の操作は後段の action に寄せる。そのため Claude はテストもビルドも実行できず、検証は PR を確かめる人が担う。
