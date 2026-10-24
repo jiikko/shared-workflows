@@ -36,9 +36,13 @@ on:
         type: string
         default: ''
       audits:
-        description: 'audit skill の監査タイプ ID を空白区切りで (例: test-cleanup test-helpers)'
+        description: 'audit skill の監査タイプ ID を空白区切りで (例: test-cleanup test-helpers)。selected_audits_json で 1 つも選ばれていないときに使う (schedule の既定)'
         type: string
-        required: true
+        default: ''
+      selected_audits_json:
+        description: '呼び出し側の toJSON(inputs)。監査タイプ ID を名前にした boolean の入力 (手動起動の checkbox) のうち true のものを audits にする'
+        type: string
+        default: ''
       cost:
         description: 'light-3usd (動作確認用) / standard-10usd / heavy-25usd'
         type: string
@@ -92,11 +96,13 @@ jobs:
       branch: ${{ steps.plan.outputs.branch }}
       title: ${{ steps.plan.outputs.title }}
       pr_paths: ${{ steps.plan.outputs.pr_paths }}
+      audits: ${{ steps.plan.outputs.audits }}
     steps:
       - id: plan
         env:
           COST: ${{ inputs.cost }}
           AUDITS: ${{ inputs.audits }}
+          SELECTED: ${{ inputs.selected_audits_json }}
           TARGETS: ${{ inputs.targets }}
           PR_PATHS: ${{ inputs.pr_paths }}
         run: |
@@ -110,6 +116,13 @@ jobs:
                             scope='対象のファイルを全部読み、見つけた候補をすべて検討する。' ;;
             *) echo "未知の cost: $COST" >&2; exit 1 ;;
           esac
+          # 手動起動の checkbox: toJSON(inputs) では boolean だけが引用符の無い true / false になる (cost などの文字列は当たらない)
+          picked=$(printf '%s\n' "$SELECTED" | grep -oE '"[a-z0-9-]+": true' | sed 's/^"\([^"]*\)".*/\1/' | paste -sd' ' -)
+          if [ -n "$picked" ]; then
+            AUDITS=$picked
+          elif printf '%s\n' "$SELECTED" | grep -qE '"[a-z0-9-]+": false'; then
+            echo "監査タイプを 1 つ以上選ぶ" >&2; exit 1
+          fi
           # 監査タイプは branch 名と PR の題に入るので、ID の形だけを通す
           printf '%s\n' "$AUDITS" | grep -qxE '[a-z0-9-]+( [a-z0-9-]+)*' \
             || { echo "audits は空白区切りの監査タイプ ID で渡す: $AUDITS" >&2; exit 1; }
@@ -125,6 +138,7 @@ jobs:
             echo "branch=claude-audit/${AUDITS// /-}"
             echo "title=claude-audit: $AUDITS ($COST)"
             echo "pr_paths<<$eof"; printf '%s\n' "$paths"; echo "$eof"
+            echo "audits=$AUDITS"
           } >> "$GITHUB_OUTPUT"
           echo "audits=$AUDITS cost=$COST runner=$1 model=$4 effort=$5 max_turns=$6 budget=\$$7" >> "$GITHUB_STEP_SUMMARY"
 
@@ -171,6 +185,7 @@ jobs:
         env:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
           SKILLS_REPO: ${{ inputs.skills_repo }}
+          AUDITS: ${{ needs.plan.outputs.audits }}
         run: |
           curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CODE_VERSION"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -179,7 +194,14 @@ jobs:
           mkdir -p "$HOME/.claude/skills"
           ln -s "$HOME/skills-src/_claude/skills/audit" "$HOME/.claude/skills/audit"
           ln -s "$HOME/skills-src/_claude/rules" "$HOME/.claude/rules"
-          test -f "$HOME/.claude/skills/audit/SKILL.md"
+          skill="$HOME/.claude/skills/audit/SKILL.md"
+          test -f "$skill"
+          # 呼び出し側の checkbox の一覧は skill の表の写しなので、古くなった ID を予算を使う前に止める。
+          # 表の行の形 (| id | ...) が変わって 1 つも当たらないときも止める (較正)
+          grep -qE '^\| test-cleanup \|' "$skill" || { echo "SKILL.md の監査タイプの表を読めない" >&2; exit 1; }
+          bad=''
+          for a in $AUDITS; do grep -qE "^\| $a \|" "$skill" || bad="$bad $a"; done
+          [ -z "$bad" ] || { echo "audit skill の監査タイプ一覧に無い:$bad" >&2; exit 1; }
 
       - name: Run audit
         id: audit
@@ -190,7 +212,7 @@ jobs:
           MAX_TURNS: ${{ needs.plan.outputs.max_turns }}
           BUDGET: ${{ needs.plan.outputs.budget }}
           SCOPE: ${{ needs.plan.outputs.scope }}
-          AUDITS: ${{ inputs.audits }}
+          AUDITS: ${{ needs.plan.outputs.audits }}
           TARGETS: ${{ inputs.targets }}
           EXCLUDE: ${{ inputs.exclude }}
           INSTRUCTIONS: ${{ inputs.instructions }}
@@ -203,7 +225,7 @@ jobs:
           prompt="~/.claude/skills/audit/SKILL.md を Read し、監査タイプ $AUDITS を「直接実行」で実行してください。
           CI の中で動いているので、ユーザーへの質問 (AskUserQuestion) はせず、skill が選択を求める箇所は次の指定で進めてください。
 
-          対象: ${target_list:-repo 全体}
+          対象: ${target_list:-監査タイプに合わせて repo 全体から選ぶ}
           対象から外すもの: ${exclude_list:-なし}
 
           制約:

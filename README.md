@@ -161,6 +161,8 @@ Claude Code に audit skill（[jiikko/dotfiles](https://github.com/jiikko/dotfil
 
 ### 使い方
 
+監査の対象は既定で Claude が監査タイプに合わせて選ぶ（`targets` を渡さない）。呼び出し側に書くのは、実行頻度・WIF の ID・PR に含める範囲・repo 固有の指示だけにする。
+
 ```yaml
 # .github/workflows/claude-audit.yml
 name: Claude audit
@@ -171,9 +173,11 @@ on:
   workflow_dispatch:
     inputs:
       cost:
+        description: '実行コスト (API の予算の上限。light-3usd は workflow の動作確認用)'
         type: choice
         default: standard-10usd
         options: [light-3usd, standard-10usd, heavy-25usd]
+      # 監査タイプの checkbox は下の「監査タイプの checkbox」から写す
 
 jobs:
   audit:
@@ -186,14 +190,108 @@ jobs:
       anthropic_organization_id: <組織 ID>
       anthropic_federation_rule_id: fdrl_...
       anthropic_service_account_id: svac_...
-      audits: test-cleanup test-helpers
       cost: ${{ inputs.cost || 'standard-10usd' }}
-      targets: |
-        Tests
-      # 対象のほかに、skill の実行ログ (issues/audit-log) と起こした issue の置き場所も含める
-      pr_paths: |
-        Tests
-        issues/**
+      audits: test-cleanup test-helpers              # schedule (checkbox が無い起動) の監査タイプ
+      selected_audits_json: ${{ toJSON(inputs) }}  # 手動起動で checkbox の選択を使う
+      # Claude が触りうるコードの置き場所と、skill の実行ログ (issues/audit-log)・起こした issue の置き場所
+      pr_paths: src,Tests,issues/**
+      instructions: |
+        - (repo 固有の制約。生成物を作り直せない場所・issue の起こし方など)
+```
+
+### 監査タイプの checkbox
+
+workflow_dispatch に複数選択の入力が無く、入力は呼び出し側の workflow にしか定義できないので、監査タイプを 1 つずつ boolean の入力にして呼び出し側の `inputs:` に写す。名前は監査タイプ ID のままにする（`selected_audits_json` が true の入力の名前を ID として読む。監査タイプ以外の boolean の入力を置かない）。一覧は audit skill の SKILL.md「監査タイプ一覧」の写しで、skill に無い ID は Claude を起動する前（予算を使う前）に止まる。skill に監査タイプが増えたら、ここと呼び出し側に足す。入力は 25 個まで（`cost` と合わせていま 23 個）。既定でオンにしたいものは `default: true` にする。
+
+```yaml
+      design:
+        description: '設計: 設計改善'
+        type: boolean
+        default: false
+      responsibility:
+        description: '設計: 責務集中'
+        type: boolean
+        default: false
+      duplication:
+        description: '設計: コード重複'
+        type: boolean
+        default: false
+      polymorphism:
+        description: '設計: ポリモーフィズム置換'
+        type: boolean
+        default: false
+      leaky-abstraction:
+        description: '設計: 抽象境界の具象漏れ'
+        type: boolean
+        default: false
+      encapsulation:
+        description: '設計: 知識の帰属'
+        type: boolean
+        default: false
+      ui-components:
+        description: '設計: UIコンポーネント共通化'
+        type: boolean
+        default: false
+      ux:
+        description: 'UX: UX改善'
+        type: boolean
+        default: false
+      security:
+        description: '品質: セキュリティ'
+        type: boolean
+        default: false
+      resource-leaks:
+        description: '品質: リソースリーク'
+        type: boolean
+        default: false
+      broken-code:
+        description: '品質: 壊れたコード'
+        type: boolean
+        default: false
+      dead-code:
+        description: '品質: デッドコード'
+        type: boolean
+        default: false
+      error-handling:
+        description: '品質: エラーハンドリング'
+        type: boolean
+        default: false
+      false-green:
+        description: '品質: 偽の緑'
+        type: boolean
+        default: false
+      performance:
+        description: '品質: パフォーマンス'
+        type: boolean
+        default: false
+      concurrency:
+        description: '品質: 並行・排他'
+        type: boolean
+        default: false
+      test-cleanup:
+        description: 'テスト: 無意味テスト削除'
+        type: boolean
+        default: false
+      test-helpers:
+        description: 'テスト: テストヘルパー共通化'
+        type: boolean
+        default: false
+      dependency:
+        description: '管理: 依存関係'
+        type: boolean
+        default: false
+      ci:
+        description: '管理: CI の構成'
+        type: boolean
+        default: false
+      lint-from-done:
+        description: '改善: lint転用調査'
+        type: boolean
+        default: false
+      general:
+        description: '総合: 総合課題発見'
+        type: boolean
+        default: false
 ```
 
 > **前提:**
@@ -215,9 +313,10 @@ jobs:
 | `anthropic_federation_rule_id` | （必須） | federation rule の ID |
 | `anthropic_service_account_id` | （必須） | service account の ID |
 | `anthropic_workspace_id` | `''` | workspace の ID。rule が 1 つの workspace だけを対象にするなら省略できる |
-| `audits` | （必須） | 監査タイプ ID の空白区切り（`test-cleanup test-helpers` / `dead-code` など。一覧は audit skill の SKILL.md） |
+| `audits` | `''` | 監査タイプ ID の空白区切り（`test-cleanup test-helpers` / `dead-code` など）。`selected_audits_json` で 1 つも選ばれていない起動（schedule）で使う |
+| `selected_audits_json` | `''` | 呼び出し側の `toJSON(inputs)`。監査タイプの checkbox のうち true のものを `audits` にする。checkbox があるのに 1 つも選ばれていなければ止める |
 | `cost` | `standard-10usd` | 下表 |
-| `targets` | `''`（repo 全体） | 監査の対象パス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
+| `targets` | `''`（監査タイプに合わせて Claude が選ぶ） | 監査の対象パス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
 | `exclude` | `''` | 対象から外すパス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
 | `instructions` | `''` | repo 固有の追加の指示（生成物の制約・issue の起こし方など） |
 | `allowed_tools` | `''` | Read / Glob / Grep / Edit / Write に加えて許すツール（カンマ区切り。例: `Bash(bin/next-issue-number)`） |
