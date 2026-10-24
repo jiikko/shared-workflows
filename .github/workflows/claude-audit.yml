@@ -209,8 +209,8 @@ jobs:
           制約:
           - 許可されたツール以外は使えず、テストもビルドも実行できない。正しさをコードを読んで確かめられる変更だけを入れる。
             確信が持てない変更は入れずに、PR 本文の「見送った候補」に理由と一緒に書く
-          - skill の Step 5 の実行ログへの追記は行う。commit は後段の step が行うので、あなたは git を触らない
-          - 変更が 1 つも無いと判断したら、ファイルを書かずに終える (PR は作られない)
+          - skill の Step 5 の実行ログへの追記は、変更を入れたときだけ行う。commit は後段の step が行うので、あなたは git を触らない
+          - 変更が 1 つも無いと判断したら、実行ログも PR 本文も含めてファイルを書かずに終える (PR は作られない)
           - 予算・ターン数・時間の上限で途中で打ち切られうる。変更を 1 つ入れるたびに、その時点の PR 本文を書き直しておく
 
           $PR_BODY へ PR 本文を日本語で書く:
@@ -248,30 +248,46 @@ jobs:
 
       # PR 本文は workspace の外へ移してから PR を作る (pr_paths の指定次第で本文のファイルが commit に混ざらないように)。
       # 上限で打ち切られた run でも、それまでの変更を PR にする。途中までの変更が混ざりうることを本文に書き足す。
+      # 不変条件: Claude が入れた変更は PR に入るか、入らないなら job が赤になる (黙って消さない)。
+      # pr_paths の外の変更は create-pull-request が commit しないので、本文の有無にかかわらずここで数える。
       - name: Prepare PR body
         id: body
         if: ${{ !cancelled() }}
         env:
           AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+          PR_PATHS: ${{ needs.plan.outputs.pr_paths }}
         run: |
           # hashFiles はドットで始まるディレクトリを拾わないことがあるので、有無はシェルで見る
-          if [ ! -s "$PR_BODY" ]; then
-            # 本文が無いのに作業ツリーが変わっているなら、変更が PR にならずに消える。黙って緑にしない
-            if [ -n "$(git status --porcelain)" ]; then
+          has_body=false
+          if [ -s "$PR_BODY" ]; then
+            mv "$PR_BODY" "$RUNNER_TEMP/pr-body.md"
+            has_body=true
+          fi
+          rm -rf .claude-audit
+          excludes=()
+          while IFS= read -r p; do [ -z "$p" ] || excludes+=(":(exclude)$p"); done <<< "$PR_PATHS"
+          outside=$(git status --porcelain --untracked-files=all -- . "${excludes[@]}")
+          if [ "$has_body" = false ]; then
+            if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
               echo "PR 本文が無いのに作業ツリーに変更がある (PR は作らない):" >> "$GITHUB_STEP_SUMMARY"
-              git status --porcelain | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+              git status --porcelain --untracked-files=all | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
             echo "PR 本文が無い (変更なし)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          mv "$PR_BODY" "$RUNNER_TEMP/pr-body.md"
-          rm -rf .claude-audit
           if [ "$AUDIT_OUTCOME" = failure ]; then
             printf '\n> 🚨 この run は Claude の step が失敗で終わった (予算・ターン数・時間の上限のどれか)。最後の変更が途中までの可能性がある。\n' \
               >> "$RUNNER_TEMP/pr-body.md"
           fi
           echo "path=$RUNNER_TEMP/pr-body.md" >> "$GITHUB_OUTPUT"
+          if [ -n "$outside" ]; then
+            # PR は作る (後段は !cancelled() で走る) が、PR に入らない変更があることを本文と Summary に出して job を赤にする
+            { printf '\n> 🚨 次の変更は PR に含めるパスの外にあり、この PR に入っていない (ビルドが通らない可能性がある):\n\n'
+              printf '%s\n' "$outside" | sed 's/^/    /'; } >> "$RUNNER_TEMP/pr-body.md"
+            { echo "PR に含めるパスの外の変更 (PR に入らない):"; printf '%s\n' "$outside" | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       # 前提: 呼び出し側の repo の Settings > Actions > General の「Allow GitHub Actions to create and approve pull requests」が有効
       - name: Create pull request
