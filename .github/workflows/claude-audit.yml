@@ -12,8 +12,9 @@ name: Claude audit
 # CLI は 2.1.309 で ANTHROPIC_IDENTITY_TOKEN_FILE ほかを読むことを本体の文字列で確認した。版を上げるときは WIF の対応を確かめ直す。
 #
 # どの cost でも job は 30 分以内に収める (GHA の実行時間も private repo では課金される)。ubuntu-slim は job が 15 分で打ち切られる
-# (timeout-minutes では延ばせない) ので、30 分使う heavy-25usd は ubuntu-latest で回す。opus 1 本は 1 回 9 分ほど・約 8 ドル
-# (obaket の 2026-10-23 の run) で、standard 以上は単価が opus の 2.5 倍の Fable にして、同じ予算を短い時間で使う。
+# (timeout-minutes では延ばせない) ので、予算を 30 分かけて使う standard-30usd / heavy-50usd は ubuntu-latest で回す。
+# opus 1 本は 1 回 9 分ほど・約 8 ドル (obaket の 2026-10-23 の run) で、standard 以上は単価が opus の 2.5 倍の Fable にして、
+# 同じ時間でより多くの予算を使う。30 分で上限まで届くかは未実測 (run の Step Summary の消費額と所要時間で調整する)。
 # fast モードを使わない: Fable は対応していない (Opus 系だけ)。Opus の fast モードにする版は WIF の組織で通るかを確かめていない。
 
 on:
@@ -44,9 +45,9 @@ on:
         type: string
         default: ''
       cost:
-        description: 'light-3usd (動作確認用) / standard-10usd / heavy-25usd'
+        description: 'light-10usd (動作確認用) / standard-30usd / heavy-50usd'
         type: string
-        default: standard-10usd
+        default: standard-30usd
       targets:
         description: '監査の対象パス (空白・カンマ・改行区切り)。空なら repo 全体'
         type: string
@@ -108,11 +109,11 @@ jobs:
         run: |
           # runner job_timeout step_timeout model effort max_turns budget
           case "$COST" in
-            light-3usd)     set -- ubuntu-slim   15 12 claude-sonnet-5-5 medium 60  3
+            light-10usd)    set -- ubuntu-slim   15 12 claude-sonnet-5-5 medium 60  10
                             scope='予算が小さい。確信の高い候補を最大 3 件まで入れて終える。' ;;
-            standard-10usd) set -- ubuntu-slim   15 13 claude-fable-5-1  high   120 10
+            standard-30usd) set -- ubuntu-latest 30 25 claude-fable-5-1  high   300 30
                             scope='' ;;
-            heavy-25usd)    set -- ubuntu-latest 30 25 claude-fable-5-1  xhigh  300 25
+            heavy-50usd)    set -- ubuntu-latest 30 25 claude-fable-5-1  xhigh  500 50
                             scope='対象のファイルを全部読み、見つけた候補をすべて検討する。' ;;
             *) echo "未知の cost: $COST" >&2; exit 1 ;;
           esac

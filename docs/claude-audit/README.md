@@ -31,7 +31,7 @@ workflow_dispatch に複数選択の入力が無く、入力は呼び出し側�
 | `anthropic_workspace_id` | `''` | workspace の ID。rule が 1 つの workspace だけを対象にするなら省略できる |
 | `audits` | `''` | 監査タイプ ID の空白区切り（`test-cleanup test-helpers` / `dead-code` など）。`selected_audits_json` で 1 つも選ばれていない起動（schedule）で使う |
 | `selected_audits_json` | `''` | 呼び出し側の `toJSON(inputs)`。監査タイプの checkbox のうち true のものを `audits` にする。checkbox があるのに 1 つも選ばれていなければ止める |
-| `cost` | `standard-10usd` | 下表 |
+| `cost` | `standard-30usd` | 下表 |
 | `targets` | `''`（監査タイプに合わせて Claude が選ぶ） | 監査の対象パス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
 | `exclude` | `''` | 対象から外すパス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
 | `instructions` | `''` | repo 固有の追加の指示（生成物の制約・issue の起こし方など） |
@@ -42,8 +42,8 @@ workflow_dispatch に複数選択の入力が無く、入力は呼び出し側�
 
 | cost | 用途 | モデル / effort | 予算の上限 | runner（job の打ち切り） |
 |------|------|----------------|-----------|------------------------|
-| `light-3usd` | workflow を変えたときの動作確認 | Sonnet 5.5 / medium | 3 USD | ubuntu-slim（15 分） |
-| `standard-10usd` | 定期実行 | Fable 5.1 / high | 10 USD | ubuntu-slim（15 分） |
-| `heavy-25usd` | 多めに回すとき | Fable 5.1 / xhigh | 25 USD | ubuntu-latest（30 分） |
+| `light-10usd` | workflow を変えたときの動作確認 | Sonnet 5.5 / medium | 10 USD | ubuntu-slim（15 分） |
+| `standard-30usd` | 定期実行 | Fable 5.1 / high | 30 USD | ubuntu-latest（30 分） |
+| `heavy-50usd` | 多めに回すとき | Fable 5.1 / xhigh | 50 USD | ubuntu-latest（30 分） |
 
 予算は CLI の `--max-budget-usd` で、ターンを終えてから判定するので最後のターンの分だけ超えうる。上限・ターン数・時間で打ち切られても、それまでの変更で PR を作り、本文に「途中までの可能性がある」と書き足す。run の消費額・ターン数・所要時間・使ったモデルは Step Summary に出る。

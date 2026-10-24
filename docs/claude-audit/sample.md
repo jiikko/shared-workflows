@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       cost:
-        description: '実行コスト (API の予算の上限。light-3usd は workflow の動作確認用)'
+        description: '実行コスト (API の予算の上限。light-10usd は workflow の動作確認用)'
         type: choice
-        default: standard-10usd
-        options: [light-3usd, standard-10usd, heavy-25usd]
+        default: standard-30usd
+        options: [light-10usd, standard-30usd, heavy-50usd]
       # 監査タイプの checkbox は下の「監査タイプの checkbox」から写す
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
       anthropic_organization_id: <組織 ID>
       anthropic_federation_rule_id: fdrl_...
       anthropic_service_account_id: svac_...
-      cost: ${{ inputs.cost || 'standard-10usd' }}
+      cost: ${{ inputs.cost || 'standard-30usd' }}
       audits: test-cleanup test-helpers              # schedule (checkbox が無い起動) の監査タイプ
       selected_audits_json: ${{ toJSON(inputs) }}  # 手動起動で checkbox の選択を使う
       # Claude が触りうるコードの置き場所と、skill の実行ログ (issues/audit-log)・起こした issue の置き場所
