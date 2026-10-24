@@ -190,6 +190,10 @@ jobs:
       cost: ${{ inputs.cost || 'standard-10usd' }}
       targets: |
         Tests
+      # 対象のほかに、skill の実行ログ (issues/audit-log) と起こした issue の置き場所も含める
+      pr_paths: |
+        Tests
+        issues/**
 ```
 
 > **前提:**
@@ -217,7 +221,7 @@ jobs:
 | `exclude` | `''` | 対象から外すパス（空白・カンマ・改行区切り。空白を含むパスは渡せない） |
 | `instructions` | `''` | repo 固有の追加の指示（生成物の制約・issue の起こし方など） |
 | `allowed_tools` | `''` | Read / Glob / Grep / Edit / Write に加えて許すツール（カンマ区切り。例: `Bash(bin/next-issue-number)`） |
-| `pr_paths` | `''`（= `targets`） | PR に含めるパス（空白・カンマ・改行区切り。空白を含むパスは渡せない）。`targets` が空なら必須（空だと作業ツリーの変更が全部 commit されるため、plan job で止める） |
+| `pr_paths` | `''`（= `targets`） | PR に含めるパス（空白・カンマ・改行区切り。空白を含むパスは渡せない）。`targets` が空なら必須（空だと作業ツリーの変更が全部 commit されるため、plan job で止める）。skill の実行ログ（`issues/audit-log`）と起こした issue の置き場所も含める。外に変更が残ると、PR は作ったうえで job を失敗にする |
 | `skills_repo` | `jiikko/dotfiles` | audit skill と rules を取る public repo |
 | `claude_code_version` | `2.1.309` | Claude Code CLI の版（WIF の環境変数を読むことを確かめた版） |
 

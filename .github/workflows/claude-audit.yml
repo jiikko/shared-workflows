@@ -60,7 +60,7 @@ on:
         type: string
         default: ''
       pr_paths:
-        description: 'PR に含めるパス (空白・カンマ・改行区切り。create-pull-request の add-paths)。空なら targets'
+        description: 'PR に含めるパス (空白・カンマ・改行区切り。create-pull-request の add-paths)。空なら targets。skill の実行ログと起こした issue の置き場所も含める'
         type: string
         default: ''
       skills_repo:
@@ -250,6 +250,7 @@ jobs:
       # 上限で打ち切られた run でも、それまでの変更を PR にする。途中までの変更が混ざりうることを本文に書き足す。
       # 不変条件: Claude が入れた変更は PR に入るか、入らないなら job が赤になる (黙って消さない)。
       # pr_paths の外の変更は create-pull-request が commit しないので、本文の有無にかかわらずここで数える。
+      # (core.quotePath=false は一覧の表示のため。判定は pathspec で行うので quote の有無に依らない)
       - name: Prepare PR body
         id: body
         if: ${{ !cancelled() }}
@@ -266,11 +267,11 @@ jobs:
           rm -rf .claude-audit
           excludes=()
           while IFS= read -r p; do [ -z "$p" ] || excludes+=(":(exclude)$p"); done <<< "$PR_PATHS"
-          outside=$(git status --porcelain --untracked-files=all -- . "${excludes[@]}")
+          outside=$(git -c core.quotePath=false status --porcelain --untracked-files=all -- . "${excludes[@]}")
           if [ "$has_body" = false ]; then
             if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
               echo "PR 本文が無いのに作業ツリーに変更がある (PR は作らない):" >> "$GITHUB_STEP_SUMMARY"
-              git status --porcelain --untracked-files=all | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+              git -c core.quotePath=false status --porcelain --untracked-files=all | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
             echo "PR 本文が無い (変更なし)" >> "$GITHUB_STEP_SUMMARY"
