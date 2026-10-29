@@ -1,0 +1,145 @@
+name: dupscan gate
+
+# 新しく増えた重複 (既にある関数の写し) を dupscan gate で止める。dupscan は jiikko/dotfiles の src/dupscan を、
+# 呼び出し側が固定した commit で build する (build と記録の版を一致させる)。
+# dupscan は Swift / Go を構文木で読むだけで実行しないので、Linux の runner で足りる。
+# トリガー・paths の絞り込み・concurrency は呼び出し側に置く (repo ごとに何を変更とみなすかが違う)。
+
+on:
+  workflow_call:
+    inputs:
+      dotfiles_sha:
+        description: 'dupscan を build する jiikko/dotfiles の commit (公開 repo へ push 済みの完全な SHA)'
+        required: true
+        type: string
+      go_version:
+        description: 'dupscan の build に使う Go の版'
+        required: false
+        type: string
+        default: '1.25'
+      runs_on:
+        description: 'runner'
+        required: false
+        type: string
+        default: 'ubuntu-slim'
+      timeout_minutes:
+        description: 'job の時間の上限 (分)'
+        required: false
+        type: number
+        default: 15
+      fail_new_exclusions:
+        description: 'base から新しく足された除外か、パスの除外で通した変わった単位があれば rc=1 にする (除外の追加を人の目に届けるため)'
+        required: false
+        type: boolean
+        default: true
+      extra_args:
+        description: 'dupscan gate に足す引数 (空白で区切る。例: -strict-analysis)'
+        required: false
+        type: string
+        default: ''
+      run_metadata_schema:
+        description: '補助の記録 (dupscan-run.json) の schema の名前。読む側の集計に合わせる'
+        required: false
+        type: string
+        default: 'dupscan-run.v1'
+      artifact_name:
+        description: 'gate の記録を上げる artifact の名前'
+        required: false
+        type: string
+        default: 'dupscan-record'
+
+jobs:
+  gate:
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    env:
+      DOTFILES_SHA: ${{ inputs.dotfiles_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # base の commit まで要る (無いと dupscan gate が rc=2 で止まる)
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: false
+      # 取り出し先は workspace の外にする (gate は ignore されていない untracked も読むので、workspace に置くと取ってきた Go のコードまで走査する)。
+      - name: Build dupscan
+        id: build
+        run: |
+          git clone -q --no-checkout https://github.com/jiikko/dotfiles "$RUNNER_TEMP/dotfiles"
+          git -C "$RUNNER_TEMP/dotfiles" checkout -q "$DOTFILES_SHA" -- src/dupscan src/subproc
+          (cd "$RUNNER_TEMP/dotfiles/src/dupscan" && go build -o "$RUNNER_TEMP/dupscan" .)
+      # dupscan は git に --no-lazy-fetch (git 2.44 から。partial clone の消えた blob を取りに行かせない守り) を付ける。
+      # git 2.43 の ubuntu-slim では rc=129 で落ちるので、2.44 未満のときだけ外す shim を前に置く。
+      # この checkout は fetch-depth: 0 の通常の clone (partial clone でない) なので、この引数が効く場面は無い。
+      - name: Drop --no-lazy-fetch for git < 2.44
+        run: |
+          real_git="$(command -v git)"
+          ver="$("$real_git" version | sed -E 's/^git version ([0-9]+\.[0-9]+).*/\1/')"
+          major="${ver%%.*}" minor="${ver#*.}"
+          if [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 44 ]; }; then
+            echo "git $ver は --no-lazy-fetch を知っている。shim は置かない"
+            exit 0
+          fi
+          shim="$RUNNER_TEMP/git-shim"
+          case "$real_git" in "$shim"/*) echo "git が shim 自身に解決された: $real_git" >&2; exit 1 ;; esac
+          mkdir -p "$shim"
+          # shim の本文の $a / $@ はここで展開させず、shim が実行されるときに展開する
+          # shellcheck disable=SC2016
+          printf '%s\n' '#!/bin/sh' 'for a do shift; [ "$a" = "--no-lazy-fetch" ] || set -- "$@" "$a"; done' "exec \"$real_git\" \"\$@\"" > "$shim/git"
+          chmod +x "$shim/git"
+          "$shim/git" --no-lazy-fetch version
+          echo "$shim" >> "$GITHUB_PATH"
+      - name: dupscan gate
+        id: gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FAIL_NEW_EXCLUSIONS: ${{ inputs.fail_new_exclusions }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          case "$BASE" in ""|0000000000000000000000000000000000000000) BASE="origin/$DEFAULT_BRANCH" ;; esac # 新しいブランチの push
+          printf 'base=%s\n' "$BASE" >> "$GITHUB_OUTPUT"
+          set -- -base "$BASE" -record "$RUNNER_TEMP/dupscan-record.jsonl"
+          if [ "$FAIL_NEW_EXCLUSIONS" = "true" ]; then set -- "$@" -fail-new-exclusions; fi
+          # EXTRA_ARGS は空白で分けて渡す (引用符で 1 語にしない)
+          # shellcheck disable=SC2086
+          set -- "$@" $EXTRA_ARGS
+          set +e
+          "$RUNNER_TEMP/dupscan" gate "$@" .
+          gate_rc=$?
+          set -e
+          printf 'exit_code=%s\n' "$gate_rc" >> "$GITHUB_OUTPUT"
+          exit "$gate_rc"
+      - name: Write run metadata
+        if: always()
+        env:
+          SCHEMA_JSON: ${{ toJSON(inputs.run_metadata_schema) }}
+          RUN_ID_JSON: ${{ toJSON(github.run_id) }}
+          RUN_ATTEMPT_JSON: ${{ toJSON(github.run_attempt) }}
+          EVENT_JSON: ${{ toJSON(github.event_name) }}
+          HEAD_SHA_JSON: ${{ toJSON(github.sha) }}
+          SOURCE_SHA_JSON: ${{ toJSON(github.event.pull_request.head.sha || github.sha) }}
+          TOOL_SHA_JSON: ${{ toJSON(inputs.dotfiles_sha) }}
+          BASE_JSON: ${{ toJSON(steps.gate.outputs.base) }}
+          BUILD_OUTCOME_JSON: ${{ toJSON(steps.build.outcome) }}
+          GATE_OUTCOME_JSON: ${{ toJSON(steps.gate.outcome) }}
+          GATE_RC_JSON: ${{ steps.gate.outputs.exit_code || 'null' }}
+        run: |
+          record_present=false
+          if [ -s "$RUNNER_TEMP/dupscan-record.jsonl" ]; then record_present=true; fi
+          printf '{"schema":%s,"run_id":%s,"run_attempt":%s,"event":%s,"head_sha":%s,"source_sha":%s,"tool_sha":%s,"base_requested":%s,"build_outcome":%s,"gate_outcome":%s,"gate_exit_code":%s,"record_present":%s}\n' \
+            "$SCHEMA_JSON" "$RUN_ID_JSON" "$RUN_ATTEMPT_JSON" "$EVENT_JSON" "$HEAD_SHA_JSON" "$SOURCE_SHA_JSON" \
+            "$TOOL_SHA_JSON" "$BASE_JSON" "$BUILD_OUTCOME_JSON" "$GATE_OUTCOME_JSON" \
+            "$GATE_RC_JSON" "$record_present" > "$RUNNER_TEMP/dupscan-run.json"
+      - name: Upload gate record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/dupscan-record.jsonl
+            ${{ runner.temp }}/dupscan-run.json
+          if-no-files-found: ignore
