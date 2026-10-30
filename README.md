@@ -9,6 +9,7 @@ GitHub Actions の Reusable Workflow 集。複数リポジトリで共通の CI 
 | [Auto-merge dependabot PR](docs/auto-merge-dependabot/README.md) | 開いている dependabot の PR を週次でまとめて確認し、CI が全て green なものを squash merge する。 |
 | [Claude audit](docs/claude-audit/README.md) | Claude Code に audit skill（[jiikko/dotfiles](https://github.com/jiikko/dotfiles) の `_claude/skills/audit`）の監査タイプを回させ、変更を PR で出す。 |
 | [dupscan gate](docs/dupscan-gate/README.md) | base から増えた重複 (既にある関数の写し) を jiikko/dotfiles の dupscan で止める。dupscan は呼び出し側が固定した commit で build する。 |
+| [actionlint](docs/actionlint/README.md) | `.github/workflows/` を actionlint (と shellcheck) で検査する。dependabot の PR のチェックにもなる。 |
 
 `self-test.yml` は reusable workflow ではなく、この repo の workflow の手順を `tests/` で確かめる (呼び出し側からは使わない)。
 

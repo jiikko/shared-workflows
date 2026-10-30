@@ -1,0 +1,45 @@
+name: actionlint
+
+# 呼び出し側の .github/workflows/ を actionlint で検査する。run: の shell は shellcheck でも検査する。
+# dependabot の PR は workflow のファイルしか変えないので、ほかの CI が起動しない repo でも、この検査が PR のチェックになる
+# (auto-merge-dependabot は失敗したチェックが無ければマージするので、チェックが 0 本だと何も確かめずにマージされる)。
+# トリガー・paths の絞り込みは呼び出し側に置く。
+
+on:
+  workflow_call:
+    inputs:
+      actionlint_version:
+        description: 'actionlint の版 (先頭の v を除く)'
+        required: false
+        type: string
+        default: '1.7.12'
+      runs_on:
+        description: 'runner (shellcheck が入っていること)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  actionlint:
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      # go install は module の checksum を sum.golang.org で照合するので、取ってきた版が改ざんされていないかを別に確かめなくてよい
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: ${{ inputs.actionlint_version }}
+        run: GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v$ACTIONLINT_VERSION"
+      # actionlint は shellcheck が PATH に無いと run: の検査を黙って飛ばすので、無ければ止める
+      - name: actionlint
+        run: |
+          command -v shellcheck || { echo "shellcheck が無い (run: の shell を検査できない)" >&2; exit 1; }
+          "$RUNNER_TEMP/bin/actionlint" -color

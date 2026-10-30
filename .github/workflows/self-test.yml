@@ -1,19 +1,18 @@
 name: self-test
 
-# この repo の reusable workflow の shell の手順を、偽の道具で実行して確かめる (tests/)。
+# この repo の reusable workflow の shell の手順を、偽の道具で実行して確かめる (tests/)。あわせて workflow 全部を actionlint で検査する
+# (actionlint.yml を自分で呼ぶので、reusable workflow そのものも動くかがここで分かる)。
 # reusable workflow ではない (呼び出し側から uses しない)。
-# 検査の対象と検査そのものを変えた push / PR だけで回す。
+# workflow かテストを変えた push / PR だけで回す。
 on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/dupscan-gate.yml"
-      - ".github/workflows/self-test.yml"
+      - ".github/workflows/**"
       - "tests/**"
   pull_request:
     paths:
-      - ".github/workflows/dupscan-gate.yml"
-      - ".github/workflows/self-test.yml"
+      - ".github/workflows/**"
       - "tests/**"
 
 permissions:
@@ -26,3 +25,5 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 tests/dupscan-gate-test
+  actionlint:
+    uses: ./.github/workflows/actionlint.yml
