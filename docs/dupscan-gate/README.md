@@ -24,3 +24,9 @@ dupscan は jiikko/dotfiles の `src/dupscan` を、呼び出し側が固定し�
 - トリガー・paths の絞り込み・concurrency は呼び出し側に置く。master の push の run を取り消すと、その commit を検証しないまま次へ進むので、
   `cancel-in-progress` は PR だけにする形を勧める (sample.md)
 - 補助の記録は run の ID・試行の番号・build と gate の outcome・記録の有無を持つ (gate が書く `-record` の行には入らない情報)
+
+## 検査
+
+`tests/dupscan-gate-test` が、この workflow の shell の手順 (gate の引数・終了コードの保持・base の代わりの値・補助の記録・artifact の配線) を偽の dupscan で実行して確かめる。
+`${{ ... }}` の式は展開しないので、step の env に入る値をテストの側で渡す (式の評価は、呼び出し側の実際の run で確かめる)。
+この workflow かテストを変えた push / PR では `.github/workflows/self-test.yml` が回す。手元では `python3 tests/dupscan-gate-test`。

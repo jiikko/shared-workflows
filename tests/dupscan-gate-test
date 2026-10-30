@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Execute dupscan-gate.yml's shell blocks with a fake dupscan.
+
+GitHub expressions (${{ ... }}) are not evaluated here: each test passes the values the step's env would receive.
+Expression evaluation itself is checked by real runs of the callers (e.g. jiikko/obaket's dupscan.yml).
+"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+WORKFLOW = Path(sys.argv[1]) if len(sys.argv) == 2 else Path(__file__).resolve().parents[1] / '.github/workflows/dupscan-gate.yml'
+sys.argv = sys.argv[:1]
+TEXT = WORKFLOW.read_text()
+
+
+def step(name):
+    marker = '      - name: ' + name + '\n'
+    if TEXT.count(marker) != 1:
+        raise AssertionError('expected exactly one step: ' + name)
+    body = TEXT.split(marker, 1)[1].split('\n      - name:', 1)[0]
+    return body
+
+
+def run_block(name, root, extra):
+    body = step(name)
+    if '        run: |\n' not in body:
+        raise AssertionError('missing literal run block: ' + name)
+    script = body.split('        run: |\n', 1)[1]
+    script = '\n'.join(line[10:] if line.startswith('          ') else line for line in script.splitlines())
+    env = dict(os.environ)
+    env.pop('BASH_ENV', None)
+    env.pop('ENV', None)
+    env.update(RUNNER_TEMP=str(root), GITHUB_OUTPUT=str(root / 'outputs'))
+    env.update(extra)
+    return subprocess.run(['/bin/bash', '-e', '-o', 'pipefail', '-c', script], cwd=root, env=env, capture_output=True, text=True)
+
+
+class WorkflowTests(unittest.TestCase):
+    def gate(self, root, rc, base='a' * 40, fail_new_exclusions='true', extra_args=''):
+        fake = root / 'dupscan'
+        fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/argv"\nexit ' + str(rc) + '\n')
+        fake.chmod(0o755)
+        return run_block('dupscan gate', root, {
+            'BASE': base, 'DEFAULT_BRANCH': 'main',
+            'FAIL_NEW_EXCLUSIONS': fail_new_exclusions, 'EXTRA_ARGS': extra_args,
+        })
+
+    def metadata(self, root, rc='0', build='success', gate='success'):
+        values = {
+            'SCHEMA_JSON': 'caller.dupscan-run.v1',
+            'RUN_ID_JSON': 'run "quoted"\n$(touch injected)',
+            'RUN_ATTEMPT_JSON': '2', 'EVENT_JSON': 'push',
+            'HEAD_SHA_JSON': 'a' * 40, 'SOURCE_SHA_JSON': 'b' * 40,
+            'TOOL_SHA_JSON': 'c' * 40, 'BASE_JSON': 'origin/main',
+            'BUILD_OUTCOME_JSON': build, 'GATE_OUTCOME_JSON': gate,
+        }
+        env = {key: json.dumps(value) for key, value in values.items()}
+        env['GATE_RC_JSON'] = rc
+        result = run_block('Write run metadata', root, env)
+        data = json.loads((root / 'dupscan-run.json').read_text()) if result.returncode == 0 else None
+        return result, data, values
+
+    def test_gate_preserves_rc_and_reports_it(self):
+        for rc in (0, 1, 2, 127):
+            with self.subTest(rc=rc), tempfile.TemporaryDirectory(prefix='dupscan workflow = ') as tmp:
+                root = Path(tmp)
+                result = self.gate(root, rc)
+                self.assertEqual(result.returncode, rc, result.stderr)
+                self.assertEqual((root / 'outputs').read_text(), 'base=' + 'a' * 40 + '\nexit_code=' + str(rc) + '\n')
+                self.assertEqual((root / 'argv').read_text().splitlines(), ['gate', '-base', 'a' * 40, '-record', str(root / 'dupscan-record.jsonl'), '-fail-new-exclusions', '.'])
+
+    def test_fail_new_exclusions_false_drops_the_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self.gate(root, 0, fail_new_exclusions='false')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'argv').read_text().splitlines(), ['gate', '-base', 'a' * 40, '-record', str(root / 'dupscan-record.jsonl'), '.'])
+
+    def test_extra_args_are_split_into_words_before_the_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self.gate(root, 0, extra_args='-strict-analysis  -limit 3')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'argv').read_text().splitlines()[-4:], ['-strict-analysis', '-limit', '3', '.'])
+
+    def test_base_fallback_is_recorded(self):
+        for base in ('', '0' * 40):
+            with self.subTest(base=base), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                result = self.gate(root, 0, base)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('base=origin/main\n', (root / 'outputs').read_text())
+                self.assertEqual((root / 'argv').read_text().splitlines()[2], 'origin/main')
+
+    def test_metadata_links_run_and_preserves_json_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'dupscan-record.jsonl').write_text('{"failed":false}\n')
+            result, data, values = self.metadata(root, '1', gate='failure')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(data, {
+                'schema': 'caller.dupscan-run.v1', 'run_id': values['RUN_ID_JSON'],
+                'run_attempt': '2', 'event': 'push', 'head_sha': 'a' * 40,
+                'source_sha': 'b' * 40, 'tool_sha': 'c' * 40, 'base_requested': 'origin/main',
+                'build_outcome': 'success', 'gate_outcome': 'failure',
+                'gate_exit_code': 1, 'record_present': True,
+            })
+            self.assertFalse((root / 'injected').exists())
+
+    def test_build_failure_keeps_unknown_gate_rc_and_missing_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, data, _ = self.metadata(Path(tmp), 'null', build='failure', gate='skipped')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(data['gate_exit_code'])
+            self.assertFalse(data['record_present'])
+            self.assertEqual(data['build_outcome'], 'failure')
+            self.assertEqual(data['gate_outcome'], 'skipped')
+
+    def test_early_rc2_is_not_lost_when_record_is_missing(self):
+        for empty_file in (False, True):
+            with self.subTest(empty_file=empty_file), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if empty_file:
+                    (root / 'dupscan-record.jsonl').touch()
+                result, data, _ = self.metadata(root, '2', gate='failure')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(data['gate_exit_code'], 2)
+                self.assertFalse(data['record_present'])
+
+    def test_metadata_write_error_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'dupscan-run.json').mkdir()
+            result, data, _ = self.metadata(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIsNone(data)
+
+    def test_records_are_uploaded_after_failures(self):
+        for name in ('Write run metadata', 'Upload gate record'):
+            self.assertIn('        if: always()\n', step(name))
+        upload = step('Upload gate record')
+        for filename in ('dupscan-record.jsonl', 'dupscan-run.json'):
+            self.assertIn('${{ runner.temp }}/' + filename, upload)
+        self.assertIn('          name: ${{ inputs.artifact_name }}\n', upload)
+        self.assertIn('        id: build\n', step('Build dupscan'))
+        self.assertIn('        id: gate\n', step('dupscan gate'))
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

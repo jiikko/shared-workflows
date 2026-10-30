@@ -1,0 +1,28 @@
+name: self-test
+
+# この repo の reusable workflow の shell の手順を、偽の道具で実行して確かめる (tests/)。
+# reusable workflow ではない (呼び出し側から uses しない)。
+# 検査の対象と検査そのものを変えた push / PR だけで回す。
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dupscan-gate.yml"
+      - ".github/workflows/self-test.yml"
+      - "tests/**"
+  pull_request:
+    paths:
+      - ".github/workflows/dupscan-gate.yml"
+      - ".github/workflows/self-test.yml"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+jobs:
+  dupscan-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 tests/dupscan-gate-test
