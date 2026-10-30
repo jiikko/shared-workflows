@@ -17,10 +17,11 @@ dupscan は jiikko/dotfiles の `src/dupscan` を、呼び出し側が固定し�
 | `extra_args` | (空) | `dupscan gate` に足す引数 (例: `-strict-analysis`) |
 | `run_metadata_schema` | `dupscan-run.v1` | 補助の記録 `dupscan-run.json` の `schema` の値。読む側の集計に合わせる |
 | `artifact_name` | `dupscan-record` | 記録 (`dupscan-record.jsonl` と `dupscan-run.json`) を上げる artifact の名前 |
+| `base` | (空) | 手で起動 (`workflow_dispatch`) したときに比べる base の commit。空なら先端の 1 つ前 (`HEAD~1`)。PR と push では event の base が先に使われる |
 
 ## 前提と注意
 
-- base は PR なら base の SHA、push なら push の前の SHA (新しいブランチは `origin/<既定のブランチ>`)。checkout は `fetch-depth: 0`
+- base は PR なら base の SHA、push なら push の前の SHA (新しいブランチは `origin/<既定のブランチ>`)、手で起動したら `base` の入力 (空なら `HEAD~1`)。checkout は `fetch-depth: 0`・`persist-credentials: false`
 - トリガー・paths の絞り込み・concurrency は呼び出し側に置く。master の push の run を取り消すと、その commit を検証しないまま次へ進むので、
   `cancel-in-progress` は PR だけにする形を勧める (sample.md)
 - 補助の記録は run の ID・試行の番号・build と gate の outcome・記録の有無を持つ (gate が書く `-record` の行には入らない情報)

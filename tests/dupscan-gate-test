@@ -45,12 +45,12 @@ def run_block(name, root, extra):
 
 
 class WorkflowTests(unittest.TestCase):
-    def gate(self, root, rc, base='a' * 40, fail_new_exclusions='true', extra_args=''):
+    def gate(self, root, rc, base='a' * 40, fail_new_exclusions='true', extra_args='', event_name='push'):
         fake = root / 'dupscan'
         fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/argv"\nexit ' + str(rc) + '\n')
         fake.chmod(0o755)
         return run_block('dupscan gate', root, {
-            'BASE': base, 'DEFAULT_BRANCH': 'main',
+            'BASE': base, 'DEFAULT_BRANCH': 'main', 'EVENT_NAME': event_name,
             'FAIL_NEW_EXCLUSIONS': fail_new_exclusions, 'EXTRA_ARGS': extra_args,
         })
 
@@ -96,7 +96,8 @@ class WorkflowTests(unittest.TestCase):
         # 上のテストは env に値を直接入れるので、inputs から env への式 (既定値を足す・別の input を読む) が崩れても緑になる。
         # 式は展開できないので、渡し方の行を文字列のまま照合する。
         for name, line in (
-            ('dupscan gate', 'BASE: ${{ github.event.pull_request.base.sha || github.event.before }}'),
+            ('dupscan gate', 'BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base }}'),
+            ('dupscan gate', 'EVENT_NAME: ${{ github.event_name }}'),
             ('dupscan gate', 'DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}'),
             ('dupscan gate', 'FAIL_NEW_EXCLUSIONS: ${{ inputs.fail_new_exclusions }}'),
             ('dupscan gate', 'EXTRA_ARGS: ${{ inputs.extra_args }}'),
@@ -108,6 +109,13 @@ class WorkflowTests(unittest.TestCase):
         # 省略した呼び出し側でも新しい除外を止める (既定を false にすると、inputs を渡さない caller から -fail-new-exclusions が消える)
         block = re.split(r'\n {6}\S', TEXT.split('\n      fail_new_exclusions:\n', 1)[1], maxsplit=1)[0]
         self.assertIn('        default: true', block)
+        # base を渡さない呼び出し側 (手で起動しない repo) では、event の base だけで決まる
+        block = re.split(r'\n {6}\S', TEXT.split('\n      base:\n', 1)[1], maxsplit=1)[0]
+        self.assertIn("        default: ''", block)
+
+    def test_checkout_does_not_keep_the_token(self):
+        # 外から取ってきた dotfiles を build して実行する job なので、checkout に token を残さない
+        self.assertIn('          persist-credentials: false', step('Checkout'))
 
     def test_gate_failure_fails_the_job(self):
         # shell の rc を保っても、step や job が continue-on-error だと重複を見つけた run が成功になる
@@ -121,6 +129,21 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('base=origin/main\n', (root / 'outputs').read_text())
                 self.assertEqual((root / 'argv').read_text().splitlines()[2], 'origin/main')
+
+    def test_manual_run_without_base_compares_with_the_previous_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self.gate(root, 0, '', event_name='workflow_dispatch')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('base=HEAD~1\n', (root / 'outputs').read_text())
+            self.assertEqual((root / 'argv').read_text().splitlines()[2], 'HEAD~1')
+
+    def test_manual_run_uses_the_given_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self.gate(root, 0, 'b' * 40, event_name='workflow_dispatch')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'argv').read_text().splitlines()[2], 'b' * 40)
 
     def test_metadata_links_run_and_preserves_json_values(self):
         with tempfile.TemporaryDirectory() as tmp:
