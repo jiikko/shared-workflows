@@ -3,9 +3,14 @@
 
 GitHub expressions (${{ ... }}) are not evaluated here: each test passes the values the step's env would receive.
 Expression evaluation itself is checked by real runs of the callers (e.g. jiikko/obaket's dupscan.yml).
+
+The wiring that the shell cannot see (inputs -> env, the base, input defaults, failure propagation) is pinned as exact text
+in test_inputs_reach_step_env_unchanged / test_gate_failure_fails_the_job. Not detected: a rewrite that keeps those lines but
+changes their meaning elsewhere (e.g. a job-level `if:`, another step overwriting $GITHUB_OUTPUT), and GitHub's own expression semantics.
 """
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -85,7 +90,28 @@ class WorkflowTests(unittest.TestCase):
             root = Path(tmp)
             result = self.gate(root, 0, extra_args='-strict-analysis  -limit 3')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((root / 'argv').read_text().splitlines()[-4:], ['-strict-analysis', '-limit', '3', '.'])
+            self.assertEqual((root / 'argv').read_text().splitlines(), ['gate', '-base', 'a' * 40, '-record', str(root / 'dupscan-record.jsonl'), '-fail-new-exclusions', '-strict-analysis', '-limit', '3', '.'])
+
+    def test_inputs_reach_step_env_unchanged(self):
+        # 上のテストは env に値を直接入れるので、inputs から env への式 (既定値を足す・別の input を読む) が崩れても緑になる。
+        # 式は展開できないので、渡し方の行を文字列のまま照合する。
+        for name, line in (
+            ('dupscan gate', 'BASE: ${{ github.event.pull_request.base.sha || github.event.before }}'),
+            ('dupscan gate', 'DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}'),
+            ('dupscan gate', 'FAIL_NEW_EXCLUSIONS: ${{ inputs.fail_new_exclusions }}'),
+            ('dupscan gate', 'EXTRA_ARGS: ${{ inputs.extra_args }}'),
+            ('Write run metadata', 'SCHEMA_JSON: ${{ toJSON(inputs.run_metadata_schema) }}'),
+            ('Write run metadata', 'TOOL_SHA_JSON: ${{ toJSON(inputs.dotfiles_sha) }}'),
+        ):
+            with self.subTest(line=line):
+                self.assertIn('\n          ' + line + '\n', step(name))
+        # 省略した呼び出し側でも新しい除外を止める (既定を false にすると、inputs を渡さない caller から -fail-new-exclusions が消える)
+        block = re.split(r'\n {6}\S', TEXT.split('\n      fail_new_exclusions:\n', 1)[1], maxsplit=1)[0]
+        self.assertIn('        default: true', block)
+
+    def test_gate_failure_fails_the_job(self):
+        # shell の rc を保っても、step や job が continue-on-error だと重複を見つけた run が成功になる
+        self.assertNotIn('continue-on-error', TEXT)
 
     def test_base_fallback_is_recorded(self):
         for base in ('', '0' * 40):
