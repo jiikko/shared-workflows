@@ -331,7 +331,7 @@ jobs:
       # 前提: 呼び出し側の repo の Settings > Actions > General の「Allow GitHub Actions to create and approve pull requests」が有効
       - name: Create pull request
         if: ${{ !cancelled() && steps.body.outputs.path != '' }}
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: ${{ needs.plan.outputs.branch }}
           delete-branch: true
