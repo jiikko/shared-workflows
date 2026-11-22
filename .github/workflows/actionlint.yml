@@ -17,7 +17,7 @@ on:
         description: 'runner (shellcheck が入っていること)'
         required: false
         type: string
-        default: 'ubuntu-latest'
+        default: 'ubuntu-slim'
 
 jobs:
   actionlint:
