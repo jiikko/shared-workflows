@@ -111,9 +111,9 @@ jobs:
           case "$COST" in
             light-10usd)    set -- ubuntu-slim   15 12 claude-sonnet-5-5 medium 60  10
                             scope='予算が小さい。確信の高い候補を最大 3 件まで入れて終える。' ;;
-            standard-30usd) set -- ubuntu-latest 30 25 claude-fable-5-1  high   300 30
+            standard-30usd) set -- ubuntu-latest 30 25 claude-fable-5-2  high   300 30
                             scope='' ;;
-            heavy-50usd)    set -- ubuntu-latest 30 25 claude-fable-5-1  xhigh  500 50
+            heavy-50usd)    set -- ubuntu-latest 30 25 claude-fable-5-2  xhigh  500 50
                             scope='対象のファイルを全部読み、見つけた候補をすべて検討する。' ;;
             *) echo "未知の cost: $COST" >&2; exit 1 ;;
           esac
